@@ -8,7 +8,7 @@
   "host_permissions": ["http://127.0.0.1:7681/*"],
 
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src ws://127.0.0.1:7681;"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src ws://127.0.0.1:7681 http://127.0.0.1:7681;"
   },
 
   "background": {
@@ -32,7 +32,7 @@
   }],
 
   "web_accessible_resources": [{
-    "resources": ["src/panel/panel.html"],
+    "resources": ["src/panel/panel.html", "assets/*"],
     "matches": ["<all_urls>"]
   }],
 

@@ -5,7 +5,10 @@ import manifest from './manifest.json'
 export default defineConfig({
   plugins: [crx({ manifest })],
   build: {
-    outDir: 'dist',
-    emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        panel: 'src/panel/panel.html',
+      },
+    },
   },
 })
