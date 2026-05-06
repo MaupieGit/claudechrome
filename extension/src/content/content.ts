@@ -295,10 +295,16 @@ function ensurePanel(): void {
 loadState().then(() => {
   ensurePanel()
 
-  // Keep checking to restore panel if it somehow gets removed
-  setInterval(() => {
+  // Watch for any DOM changes that might remove the panel and recreate it immediately
+  const restoreObserver = new MutationObserver(() => {
     if (!document.getElementById('claudechrome-host') && state.visible) {
-      ensurePanel()
+      createPanelDOM()
     }
-  }, 250)
+  })
+
+  // Observe the entire document for changes
+  restoreObserver.observe(document, {
+    childList: true,
+    subtree: true,
+  })
 })
