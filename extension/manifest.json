@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Embedded terminal in Chrome with dockable panel",
 
-  "permissions": ["activeTab", "storage"],
+  "permissions": ["activeTab", "storage", "clipboardWrite"],
   "host_permissions": ["http://127.0.0.1:7681/*"],
 
   "content_security_policy": {

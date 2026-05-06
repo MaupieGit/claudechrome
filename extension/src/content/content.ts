@@ -67,6 +67,9 @@ function createPanelDOM(): void {
       --header-bg: #007acc;
       --header-text: #fff;
       --resize-handle: #555;
+      --dot-connected: #2ecc71;
+      --dot-connecting: #f39c12;
+      --dot-disconnected: #c0392b;
     }
 
     * {
@@ -117,6 +120,67 @@ function createPanelDOM(): void {
     #header-title {
       flex: 1;
       font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    #conn-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--dot-disconnected);
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+
+    #conn-dot.connected { background: var(--dot-connected); }
+    #conn-dot.connecting { background: var(--dot-connecting); }
+    #conn-dot.disconnected { background: var(--dot-disconnected); }
+
+    @keyframes bell-flash {
+      0%, 100% { background: var(--header-bg); }
+      50% { background: #d4ac0d; }
+    }
+
+    #header.bell {
+      animation: bell-flash 0.4s ease-in-out 2;
+    }
+
+    #overflow-menu {
+      position: absolute;
+      top: 36px;
+      right: 4px;
+      background: #252526;
+      border: 1px solid #3e3e42;
+      border-radius: 4px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      display: none;
+      flex-direction: column;
+      min-width: 180px;
+      padding: 4px 0;
+      z-index: 10;
+    }
+
+    #overflow-menu.visible {
+      display: flex;
+    }
+
+    .menu-item {
+      background: transparent;
+      border: none;
+      color: #cccccc;
+      text-align: left;
+      padding: 6px 14px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      border-radius: 0;
+    }
+
+    .menu-item:hover {
+      background: #094771;
+      color: #fff;
     }
 
     button {
@@ -203,7 +267,14 @@ function createPanelDOM(): void {
 
   const title = document.createElement('span')
   title.id = 'header-title'
-  title.textContent = 'ClaudeChrome'
+  const dot = document.createElement('span')
+  dot.id = 'conn-dot'
+  dot.className = 'connecting'
+  dot.title = 'Connecting...'
+  const titleText = document.createElement('span')
+  titleText.textContent = 'ClaudeChrome'
+  title.appendChild(dot)
+  title.appendChild(titleText)
   header.appendChild(title)
 
   const btnSsh = document.createElement('button')
@@ -248,6 +319,16 @@ function createPanelDOM(): void {
   btnMinimize.addEventListener('click', toggleMinimize)
   header.appendChild(btnMinimize)
 
+  const btnOverflow = document.createElement('button')
+  btnOverflow.id = 'btn-overflow'
+  btnOverflow.title = 'More options'
+  btnOverflow.textContent = '⋮'
+  btnOverflow.addEventListener('click', (e) => {
+    e.stopPropagation()
+    toggleOverflowMenu()
+  })
+  header.appendChild(btnOverflow)
+
   const btnClose = document.createElement('button')
   btnClose.id = 'btn-close'
   btnClose.title = 'Close'
@@ -262,6 +343,27 @@ function createPanelDOM(): void {
   })
 
   panelDiv.appendChild(header)
+
+  // Overflow menu (appended to panel, positioned absolutely under the ⋮ button)
+  const menu = document.createElement('div')
+  menu.id = 'overflow-menu'
+  const menuItems: Array<[string, () => void]> = [
+    ['Find in terminal', () => postToIframe({ type: 'open-search' })],
+    ['Clear terminal', () => postToIframe({ type: 'clear-terminal' })],
+    ['Copy session ID', copySessionId],
+    ['Pop out to window', popOutToWindow],
+  ]
+  for (const [label, handler] of menuItems) {
+    const item = document.createElement('button')
+    item.className = 'menu-item'
+    item.textContent = label
+    item.addEventListener('click', () => {
+      hideOverflowMenu()
+      handler()
+    })
+    menu.appendChild(item)
+  }
+  panelDiv.appendChild(menu)
 
   // Resize handle
   resizeHandle = document.createElement('div')
@@ -411,6 +513,60 @@ function toggleMaximize(): void {
   saveState()
 }
 
+function postToIframe(msg: unknown): void {
+  const iframe = panelDiv?.querySelector('#terminal-frame') as HTMLIFrameElement | null
+  iframe?.contentWindow?.postMessage(msg, '*')
+}
+
+function toggleOverflowMenu(): void {
+  if (!panelDiv) return
+  const menu = panelDiv.querySelector('#overflow-menu') as HTMLElement | null
+  if (!menu) return
+  menu.classList.toggle('visible')
+}
+
+function hideOverflowMenu(): void {
+  if (!panelDiv) return
+  const menu = panelDiv.querySelector('#overflow-menu') as HTMLElement | null
+  menu?.classList.remove('visible')
+}
+
+async function copySessionId(): Promise<void> {
+  if (!tabSessionId) return
+  try {
+    await navigator.clipboard.writeText(tabSessionId)
+  } catch {}
+}
+
+async function popOutToWindow(): Promise<void> {
+  if (!tabSessionId) return
+  if (!chrome.runtime?.id) {
+    notifyExtensionReloaded()
+    return
+  }
+  await safeSendMessage({ type: 'pop-out', sessionId: tabSessionId })
+}
+
+function setConnectionDot(state: 'connecting' | 'connected' | 'disconnected'): void {
+  if (!panelDiv) return
+  const dot = panelDiv.querySelector('#conn-dot') as HTMLElement | null
+  if (!dot) return
+  dot.classList.remove('connecting', 'connected', 'disconnected')
+  dot.classList.add(state)
+  dot.title = state === 'connected' ? 'Connected' : state === 'connecting' ? 'Connecting...' : 'Disconnected'
+}
+
+function flashHeaderForBell(): void {
+  if (!panelDiv) return
+  const header = panelDiv.querySelector('#header') as HTMLElement | null
+  if (!header) return
+  // Re-trigger animation by removing then re-adding the class
+  header.classList.remove('bell')
+  void header.offsetWidth
+  header.classList.add('bell')
+  setTimeout(() => header.classList.remove('bell'), 1000)
+}
+
 function updateVisibility(): void {
   if (!panelDiv) return
   panelDiv.style.display = state.visible ? 'flex' : 'none'
@@ -462,13 +618,44 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 })
 
-// Message listener for close-panel from the terminal iframe
+// Message listener for events from the terminal iframe
 window.addEventListener('message', (e: MessageEvent) => {
-  if (e.data?.type === 'close-panel') {
+  const data = e.data
+  if (!data || typeof data !== 'object') return
+
+  if (data.type === 'close-panel') {
     state.visible = false
     updateVisibility()
     saveState()
+  } else if (data.type === 'connection') {
+    if (data.state === 'connecting' || data.state === 'connected' || data.state === 'disconnected') {
+      setConnectionDot(data.state)
+    }
+  } else if (data.type === 'bell') {
+    if (state.minimized || !state.visible) flashHeaderForBell()
+  } else if (data.type === 'toggle-panel') {
+    toggle()
   }
+})
+
+// Ctrl+` toggles the panel from anywhere on the page
+window.addEventListener('keydown', (e: KeyboardEvent) => {
+  if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && e.key === '`') {
+    e.preventDefault()
+    e.stopPropagation()
+    toggle()
+  }
+}, true)
+
+// Close overflow menu when clicking outside it
+document.addEventListener('click', (e: MouseEvent) => {
+  if (!panelDiv) return
+  const menu = panelDiv.querySelector('#overflow-menu') as HTMLElement | null
+  if (!menu?.classList.contains('visible')) return
+  const path = e.composedPath()
+  const overflowBtn = panelDiv.querySelector('#btn-overflow')
+  if (path.includes(menu) || (overflowBtn && path.includes(overflowBtn))) return
+  menu.classList.remove('visible')
 })
 
 // Ensure panel is always created/restored when needed

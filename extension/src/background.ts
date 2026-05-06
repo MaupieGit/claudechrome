@@ -30,6 +30,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true
   }
 
+  if (msg.type === 'pop-out' && typeof msg.sessionId === 'string') {
+    const panelUrl = chrome.runtime.getURL('src/panel/panel.html') + '?session=' + encodeURIComponent(msg.sessionId)
+    chrome.windows.create({
+      url: panelUrl,
+      type: 'popup',
+      width: 900,
+      height: 600,
+    })
+      .then(() => sendResponse({ ok: true }))
+      .catch(err => sendResponse({ ok: false, error: String(err) }))
+    return true
+  }
+
   if (msg.type === 'open-incognito' && typeof msg.url === 'string' && typeof msg.sessionId === 'string') {
     chrome.extension.isAllowedIncognitoAccess().then(allowed => {
       if (!allowed) {

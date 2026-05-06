@@ -18,6 +18,73 @@ A Chromium browser extension that embeds a real shell terminal in a dockable, re
 
 ✨ **WebSocket Binary Frames** — Efficient raw PTY data streaming (no base64 overhead).
 
+## Controls Reference
+
+### Header buttons (left → right)
+
+| Button | Action |
+|---|---|
+| 🟢 dot + **ClaudeChrome** | Connection state: green = connected, amber = connecting, red = disconnected. Hover for tooltip. |
+| **SSH** | SSH to the current page's hostname. Click stores the username; Shift-click re-prompts to change it. |
+| **⟳** | Hard refresh the current tab (bypass cache). |
+| **⊞** | Open the current page in an incognito window with the same shell session attached. Requires "Allow in incognito" on the extension. |
+| **⊢** | Dock panel to the right edge. |
+| **⊥** | Dock panel to the bottom edge. |
+| **−** / **□** | Minimize / restore (collapses to header only). |
+| **⋮** | Overflow menu — see below. |
+| **✕** | Kill the shell session and hide the panel. |
+
+Double-click the header (anywhere except a button) to maximize / restore the panel to fullscreen.
+
+### Overflow menu (⋮)
+
+| Item | Action |
+|---|---|
+| **Find in terminal** | Open the search bar (same as `Ctrl+Shift+F`). |
+| **Clear terminal** | Wipe the visible terminal buffer. The shell process is untouched. |
+| **Copy session ID** | Copy this tab's session UUID to the clipboard (useful for debugging or sharing). |
+| **Pop out to window** | Open the terminal in a standalone Chrome popup window using the same session. The panel in the original tab will show a "session running" dialog if you reopen it there. |
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+\`` | Toggle the panel from anywhere on the page (works inside the terminal too). |
+| `Ctrl+Shift+F` | Open the search bar. |
+| `Enter` / `Shift+Enter` (in search bar) | Find next / previous match. |
+| `Esc` (in search bar) | Close search. |
+| `Esc` (when session dialog open) | Dismiss the dialog. |
+| `Ctrl+=` / `Ctrl++` | Increase font size. |
+| `Ctrl+-` | Decrease font size. |
+| `Ctrl+0` | Reset font size to default (14). |
+
+Font size is persisted per origin in `localStorage` and survives reloads.
+
+### Mouse / selection behavior
+
+- **Select text** in the terminal — the selection is automatically copied to the system clipboard.
+- **Click a URL** in terminal output — opens in a new tab (via `xterm-addon-web-links`).
+- **Drag the resize handle** (left edge when docked right, top edge when docked bottom) to change panel size.
+
+### Bell / notification
+
+When output triggers a terminal bell while the panel is **minimized or hidden**, the header flashes amber to get your attention.
+
+### Persistent state (per browser profile)
+
+The following are remembered across reloads:
+
+- Panel visibility, dock position, size, minimized state — `chrome.storage.local`
+- Per-tab shell session UUID — `chrome.storage.session` (cleared when the tab closes)
+- SSH username — `chrome.storage.local`
+- Font size — `localStorage` (per origin)
+
+### Capacity
+
+- **Scrollback:** 100,000 lines per session. Tunable via `SCROLLBACK_LINES` in `extension/src/panel/panel.ts`.
+- **Sessions:** One shell per tab. Tabs survive page navigation (session UUID stays).
+- **Reconnect:** Auto-reconnect every 2 s if the host is reachable; status bar shows progress.
+
 ## Quick Start
 
 ### 1. Install Go
