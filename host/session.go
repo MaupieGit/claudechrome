@@ -65,7 +65,7 @@ func (ps *PersistentSession) ptyReader() {
 			if err != io.EOF {
 				log.Printf("pty read error: %v", err)
 			}
-			return
+			break
 		}
 		if n == 0 {
 			continue
@@ -79,6 +79,15 @@ func (ps *PersistentSession) ptyReader() {
 			}
 		}
 		ps.clientMutex.Unlock()
+	}
+	ps.broadcastText(`{"type":"shell-exited"}`)
+}
+
+func (ps *PersistentSession) broadcastText(msg string) {
+	ps.clientMutex.Lock()
+	defer ps.clientMutex.Unlock()
+	for conn := range ps.clients {
+		_ = conn.Write(context.Background(), websocket.MessageText, []byte(msg))
 	}
 }
 

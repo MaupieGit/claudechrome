@@ -81,6 +81,15 @@ function connect(): void {
   ws.onmessage = (event: MessageEvent) => {
     if (event.data instanceof ArrayBuffer) {
       term.write(new Uint8Array(event.data))
+    } else if (typeof event.data === 'string') {
+      try {
+        const msg = JSON.parse(event.data)
+        if (msg.type === 'shell-exited') {
+          window.parent.postMessage({ type: 'close-panel' }, '*')
+        }
+      } catch {
+        // ignore malformed text frames
+      }
     }
   }
 

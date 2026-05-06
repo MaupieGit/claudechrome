@@ -5,12 +5,14 @@ interface PanelState {
   visible: boolean
   dock: 'right' | 'bottom'
   size: number
+  minimized: boolean
 }
 
 const DEFAULT_STATE: PanelState = {
   visible: false,
   dock: 'right',
   size: 350,
+  minimized: false,
 }
 
 let state: PanelState = { ...DEFAULT_STATE }
@@ -20,6 +22,8 @@ let resizeHandle: HTMLElement | null = null
 let resizing = false
 let resizeStartPos = 0
 let resizeStartSize = 0
+let maximized = false
+let preMaximizeSize = DEFAULT_STATE.size
 
 async function loadState(): Promise<void> {
   const stored = await chrome.storage.local.get('claudechrome-panel-state')
@@ -106,6 +110,7 @@ function createPanelDOM(): void {
       user-select: none;
       flex-shrink: 0;
       height: 32px;
+      cursor: pointer;
     }
 
     #header-title {
@@ -159,6 +164,29 @@ function createPanelDOM(): void {
       border: none;
       background: #1e1e1e;
     }
+
+    #panel.minimized #terminal-frame,
+    #panel.minimized #resize-handle {
+      display: none;
+    }
+
+    #panel.dock-right.minimized,
+    #panel.dock-bottom.minimized {
+      height: 32px;
+    }
+
+    #panel.maximized {
+      top: 0 !important;
+      right: 0 !important;
+      bottom: 0 !important;
+      left: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+    }
+
+    #panel.maximized #resize-handle {
+      display: none;
+    }
   `
   shadowRoot.appendChild(style)
 
@@ -191,12 +219,25 @@ function createPanelDOM(): void {
   btnDockBottom.addEventListener('click', () => setDock('bottom'))
   header.appendChild(btnDockBottom)
 
+  const btnMinimize = document.createElement('button')
+  btnMinimize.id = 'btn-minimize'
+  btnMinimize.title = 'Minimize'
+  btnMinimize.textContent = '−'
+  btnMinimize.addEventListener('click', toggleMinimize)
+  header.appendChild(btnMinimize)
+
   const btnClose = document.createElement('button')
   btnClose.id = 'btn-close'
   btnClose.title = 'Close'
   btnClose.textContent = '✕'
   btnClose.addEventListener('click', toggle)
   header.appendChild(btnClose)
+
+  header.addEventListener('dblclick', (e: MouseEvent) => {
+    if ((e.target as HTMLElement).tagName !== 'BUTTON') {
+      toggleMaximize()
+    }
+  })
 
   panelDiv.appendChild(header)
 
@@ -227,7 +268,8 @@ function createPanelDOM(): void {
 function setDock(dock: 'right' | 'bottom'): void {
   state.dock = dock
   if (panelDiv) {
-    panelDiv.className = dock === 'right' ? 'dock-right' : 'dock-bottom'
+    panelDiv.classList.remove('dock-right', 'dock-bottom')
+    panelDiv.classList.add(dock === 'right' ? 'dock-right' : 'dock-bottom')
   }
   saveState()
 }
@@ -238,9 +280,35 @@ function toggle(): void {
   saveState()
 }
 
+function toggleMinimize(): void {
+  state.minimized = !state.minimized
+  updateVisibility()
+  saveState()
+}
+
+function toggleMaximize(): void {
+  maximized = !maximized
+  if (maximized) {
+    preMaximizeSize = state.size
+    state.minimized = false
+  } else {
+    state.size = preMaximizeSize
+    if (panelDiv) panelDiv.style.setProperty('--panel-size', `${state.size}px`)
+  }
+  updateVisibility()
+  saveState()
+}
+
 function updateVisibility(): void {
-  if (panelDiv) {
-    panelDiv.style.display = state.visible ? 'flex' : 'none'
+  if (!panelDiv) return
+  panelDiv.style.display = state.visible ? 'flex' : 'none'
+  panelDiv.classList.toggle('minimized', state.minimized && !maximized)
+  panelDiv.classList.toggle('maximized', maximized)
+
+  const btnMinimize = panelDiv.querySelector('#btn-minimize') as HTMLButtonElement | null
+  if (btnMinimize) {
+    btnMinimize.textContent = state.minimized ? '□' : '−'
+    btnMinimize.title = state.minimized ? 'Restore' : 'Minimize'
   }
 }
 
@@ -279,6 +347,15 @@ function onResizeEnd(): void {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.type === 'toggle') {
     toggle()
+  }
+})
+
+// Message listener for close-panel from the terminal iframe
+window.addEventListener('message', (e: MessageEvent) => {
+  if (e.data?.type === 'close-panel') {
+    state.visible = false
+    updateVisibility()
+    saveState()
   }
 })
 
