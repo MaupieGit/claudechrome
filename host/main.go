@@ -27,7 +27,10 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/terminal", func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if !strings.HasPrefix(origin, "chrome-extension://") {
+		if *flagDebug {
+			log.Printf("connection attempt: origin=%q user-agent=%q", origin, r.Header.Get("User-Agent"))
+		}
+		if origin != "" && !strings.HasPrefix(origin, "chrome-extension://") {
 			if *flagDebug {
 				log.Printf("rejected origin: %q", origin)
 			}

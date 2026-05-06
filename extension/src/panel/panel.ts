@@ -112,4 +112,5 @@ term.onData((data: string) => {
   currentWs.send(textEncoder.encode(data))
 })
 
-scheduleReconnect()
+// Start connection immediately without health check first
+connect()
