@@ -33,6 +33,10 @@ async function saveState(): Promise<void> {
 }
 
 function createPanelDOM(): void {
+  if (document.getElementById('claudechrome-host')) {
+    return // Already exists
+  }
+
   // Create host div (fixed, full viewport, pointer-events none)
   hostDiv = document.createElement('div')
   hostDiv.id = 'claudechrome-host'
@@ -278,28 +282,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 })
 
-// Initialize on document load
-loadState().then(() => {
-  // Check if panel already exists (might be recreating after page reload)
+// Ensure panel is always created/restored when needed
+function ensurePanel(): void {
   if (!document.getElementById('claudechrome-host')) {
     createPanelDOM()
   } else {
-    // Panel already exists, just restore visibility state
     updateVisibility()
   }
-})
+}
 
-// Re-add panel if it gets removed from DOM (page navigation, hard refresh, etc.)
-const observer = new MutationObserver(() => {
-  if (!document.getElementById('claudechrome-host') && state.visible) {
-    createPanelDOM()
-  }
-})
+// Load state and create panel immediately
+loadState().then(() => {
+  ensurePanel()
 
-// Start observing document changes after a delay to ensure page is ready
-setTimeout(() => {
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: false,
-  })
-}, 100)
+  // Keep checking to restore panel if it somehow gets removed
+  setInterval(() => {
+    if (!document.getElementById('claudechrome-host') && state.visible) {
+      ensurePanel()
+    }
+  }, 250)
+})
