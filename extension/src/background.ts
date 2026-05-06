@@ -1,3 +1,8 @@
+// Allow content scripts to read/write chrome.storage.session (used for the
+// hard-refresh auto-resume flag). Without this, the set() in hardRefresh()
+// silently fails and the panel shows the "session running" dialog after reload.
+chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' }).catch(() => {})
+
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab.id) return
   chrome.tabs.sendMessage(tab.id, { type: 'toggle' }).catch(() => {})
