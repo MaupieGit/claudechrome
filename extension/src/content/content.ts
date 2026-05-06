@@ -206,6 +206,27 @@ function createPanelDOM(): void {
   title.textContent = 'ClaudeChrome'
   header.appendChild(title)
 
+  const btnSsh = document.createElement('button')
+  btnSsh.id = 'btn-ssh'
+  btnSsh.title = 'SSH to host in URL bar (shift-click to change username)'
+  btnSsh.textContent = 'SSH'
+  btnSsh.addEventListener('click', (e) => sshToCurrentHost(e.shiftKey))
+  header.appendChild(btnSsh)
+
+  const btnHardRefresh = document.createElement('button')
+  btnHardRefresh.id = 'btn-hard-refresh'
+  btnHardRefresh.title = 'Hard refresh (bypass cache)'
+  btnHardRefresh.textContent = '⟳'
+  btnHardRefresh.addEventListener('click', hardRefresh)
+  header.appendChild(btnHardRefresh)
+
+  const btnIncognito = document.createElement('button')
+  btnIncognito.id = 'btn-incognito'
+  btnIncognito.title = 'Open this page in an incognito window with the same shell session'
+  btnIncognito.textContent = '⊞'
+  btnIncognito.addEventListener('click', openInIncognito)
+  header.appendChild(btnIncognito)
+
   const btnDockRight = document.createElement('button')
   btnDockRight.id = 'btn-dock-right'
   btnDockRight.title = 'Dock right'
@@ -288,6 +309,87 @@ function killAndClose(): void {
   state.visible = false
   updateVisibility()
   saveState()
+}
+
+const SSH_USERNAME_KEY = 'claudechrome-ssh-username'
+
+async function sshToCurrentHost(forceReprompt: boolean): Promise<void> {
+  const host = window.location.hostname
+  if (!host) return
+
+  let username = ''
+  if (!forceReprompt) {
+    const stored = await chrome.storage.local.get(SSH_USERNAME_KEY)
+    username = stored[SSH_USERNAME_KEY] || ''
+  }
+
+  if (!username) {
+    const stored = await chrome.storage.local.get(SSH_USERNAME_KEY)
+    const entered = window.prompt(`SSH username for ${host} (leave blank to connect without one):`, stored[SSH_USERNAME_KEY] || '')
+    if (entered === null) return  // user cancelled
+    username = entered.trim()
+    await chrome.storage.local.set({ [SSH_USERNAME_KEY]: username })
+  }
+
+  if (!state.visible) {
+    state.visible = true
+    updateVisibility()
+    saveState()
+  }
+
+  const target = username ? `${username}@${host}` : host
+  const iframe = panelDiv?.querySelector('#terminal-frame') as HTMLIFrameElement | null
+  iframe?.contentWindow?.postMessage({ type: 'ssh-command', target }, '*')
+}
+
+// chrome.runtime can throw synchronously after the extension is reloaded.
+// Returns null on any failure so callers can decide what to do.
+async function safeSendMessage<T = any>(msg: unknown): Promise<T | null> {
+  try {
+    return await chrome.runtime.sendMessage(msg)
+  } catch {
+    return null
+  }
+}
+
+function notifyExtensionReloaded(): void {
+  window.alert('ClaudeChrome was reloaded. Refresh this page (F5) and try again.')
+}
+
+async function hardRefresh(): Promise<void> {
+  if (!chrome.runtime?.id) {
+    notifyExtensionReloaded()
+    return
+  }
+  await safeSendMessage({ type: 'hard-refresh' })
+}
+
+async function openInIncognito(): Promise<void> {
+  if (!tabSessionId) return
+  if (!chrome.runtime?.id) {
+    notifyExtensionReloaded()
+    return
+  }
+  const resp = await safeSendMessage<{ ok: boolean; reason?: string }>({
+    type: 'open-incognito',
+    url: window.location.href,
+    sessionId: tabSessionId,
+  })
+
+  if (!resp) {
+    notifyExtensionReloaded()
+    return
+  }
+  if (!resp.ok) {
+    if (resp.reason === 'not-allowed') {
+      window.alert(
+        'ClaudeChrome needs to be allowed in incognito mode.\n\n' +
+        'Open chrome://extensions, find "ClaudeChrome Terminal", click "Details", and turn on "Allow in incognito".'
+      )
+    } else {
+      window.alert('Could not open incognito window.')
+    }
+  }
 }
 
 function toggleMinimize(): void {
@@ -380,13 +482,27 @@ function ensurePanel(): void {
 
 // Load state and create panel immediately
 loadState().then(async () => {
-  // Get a stable session ID for this tab from the background script.
-  // Stored in chrome.storage.session so it survives page navigation within the tab.
-  try {
-    const resp = await chrome.runtime.sendMessage({ type: 'get-session-id' })
-    tabSessionId = resp?.sessionId || crypto.randomUUID()
-  } catch {
-    tabSessionId = crypto.randomUUID()
+  // If we were opened by the "open-incognito" button, the originating tab's session UUID
+  // is passed in as #ccsession=<UUID>. Adopt it so both windows share one host-side session.
+  const hashMatch = window.location.hash.match(/(?:^|[#&])ccsession=([0-9a-f-]+)/i)
+  if (hashMatch) {
+    tabSessionId = hashMatch[1]
+    try {
+      await chrome.runtime.sendMessage({ type: 'set-session-id', sessionId: tabSessionId })
+    } catch {}
+    history.replaceState(null, '', window.location.pathname + window.location.search)
+    // The user explicitly asked to share the session here — make sure the panel is visible.
+    state.visible = true
+    saveState()
+  } else {
+    // Get a stable session ID for this tab from the background script.
+    // Stored in chrome.storage.session so it survives page navigation within the tab.
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: 'get-session-id' })
+      tabSessionId = resp?.sessionId || crypto.randomUUID()
+    } catch {
+      tabSessionId = crypto.randomUUID()
+    }
   }
 
   ensurePanel()

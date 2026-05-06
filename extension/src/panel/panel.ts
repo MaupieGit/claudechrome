@@ -97,6 +97,11 @@ window.addEventListener('message', (e: MessageEvent) => {
     if (currentWs?.readyState === WebSocket.OPEN) {
       currentWs.send(JSON.stringify({ type: 'kill-session' }))
     }
+  } else if (e.data?.type === 'ssh-command') {
+    const target = String(e.data.target || '').trim()
+    if (!target) return
+    if (currentWs?.readyState !== WebSocket.OPEN) return
+    currentWs.send(textEncoder.encode(`ssh ${target}\r`))
   }
 })
 
