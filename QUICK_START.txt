@@ -1,0 +1,63 @@
+════════════════════════════════════════════════════════════════════════════════
+                    ClaudeChrome — Quick Start Guide
+════════════════════════════════════════════════════════════════════════════════
+
+📦 WHAT'S READY
+  ✓ Chrome extension (built, ready to load)
+  ✓ Go host binary source (ready to compile)
+  ✗ Go binary (needs Go installed)
+
+════════════════════════════════════════════════════════════════════════════════
+🚀 GET STARTED IN 3 STEPS
+
+1️⃣  Install Go
+    → Download: https://go.dev/dl/
+    → Run the Windows MSI installer for Go 1.22 or later
+    → Verify: open PowerShell and type: go version
+
+2️⃣  Build the host binary
+    → Open PowerShell
+    → Copy-paste these 6 commands:
+
+       cd C:\DevOpsRepo\claudechrome\host
+       go mod init claudechrome/host
+       go get github.com/UserExistsError/conpty@v0.1.4
+       go get github.com/coder/websocket@v1.8.14
+       go build -ldflags="-s -w" -o ..\claudechrome-host.exe .
+       Test-Path ..\claudechrome-host.exe
+
+    → Should print: True (the .exe was created)
+
+3️⃣  Run it!
+    → Open PowerShell (or use start-host.bat)
+    → Type: C:\DevOpsRepo\claudechrome\claudechrome-host.exe
+    → You should see: "listening on ws://127.0.0.1:7681/terminal"
+    → Keep this window open
+    → In Chrome: chrome://extensions → Load unpacked → extension\dist
+    → Click the CC icon on any webpage
+    → Type a shell command!
+
+════════════════════════════════════════════════════════════════════════════════
+📚 FULL GUIDES
+
+  • Setup & Deployment: C:\DevOpsRepo\claudechrome\SETUP.md
+  • Build Status:       C:\DevOpsRepo\claudechrome\BUILD_STATUS.md
+  • Implementation:     <claude plan file>
+
+════════════════════════════════════════════════════════════════════════════════
+❓ STUCK?
+
+  Panel not appearing?
+    → Check host is running (step 3 above)
+    → Open DevTools (F12) and check the Console for errors
+    → Try a simple page like https://example.com
+
+  "go: command not found"?
+    → Go is not installed. Follow step 1.
+    → Restart PowerShell after installing Go.
+
+  WebSocket error in the terminal?
+    → The host binary isn't running. Start it in a separate PowerShell window.
+    → Check port 7681 is free: netstat -an | findstr 7681
+
+════════════════════════════════════════════════════════════════════════════════

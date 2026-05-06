@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "ClaudeChrome Terminal",
+  "version": "0.1.0",
+  "description": "Embedded terminal in Chrome with dockable panel",
+
+  "permissions": ["activeTab", "storage"],
+  "host_permissions": ["http://127.0.0.1:7681/*"],
+
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src ws://127.0.0.1:7681;"
+  },
+
+  "background": {
+    "service_worker": "src/background.ts",
+    "type": "module"
+  },
+
+  "action": {
+    "default_title": "Toggle Terminal",
+    "default_icon": {
+      "16": "public/icons/icon16.png",
+      "48": "public/icons/icon48.png",
+      "128": "public/icons/icon128.png"
+    }
+  },
+
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["src/content/content.ts"],
+    "run_at": "document_idle"
+  }],
+
+  "web_accessible_resources": [{
+    "resources": ["src/panel/panel.html"],
+    "matches": ["<all_urls>"]
+  }],
+
+  "icons": {
+    "16": "public/icons/icon16.png",
+    "48": "public/icons/icon48.png",
+    "128": "public/icons/icon128.png"
+  }
+}
