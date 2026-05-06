@@ -11,13 +11,19 @@ import (
 	"github.com/coder/websocket"
 )
 
-type PersistentSession struct {
-	pty         *conpty.ConPty
+type TabSession struct {
+	id        string
+	shellCmd  string
+	pty       *conpty.ConPty
+	ctx       context.Context
+	cancel    context.CancelFunc
+	restartID int
+	alive     bool
+	hasOutput bool
+	ptyMu     sync.Mutex
+
 	clients     map[*websocket.Conn]bool
 	clientMutex sync.Mutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	shellCmd    string
 }
 
 type controlMsg struct {
@@ -26,44 +32,56 @@ type controlMsg struct {
 	Rows int    `json:"rows"`
 }
 
-func NewPersistentSession(shellCmd string) (*PersistentSession, error) {
-	pty, err := conpty.Start(shellCmd,
+func newTabSession(id, shellCmd string) (*TabSession, error) {
+	ts := &TabSession{
+		id:       id,
+		shellCmd: shellCmd,
+		clients:  make(map[*websocket.Conn]bool),
+	}
+	if err := ts.startPTY(); err != nil {
+		return nil, err
+	}
+	log.Printf("session %s created", id)
+	return ts, nil
+}
+
+func (ts *TabSession) startPTY() error {
+	pty, err := conpty.Start(ts.shellCmd,
 		conpty.ConPtyDimensions(80, 24),
 		conpty.ConPtyWorkDir(workDir()),
 	)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 
-	ps := &PersistentSession{
-		pty:      pty,
-		clients:  make(map[*websocket.Conn]bool),
-		ctx:      ctx,
-		cancel:   cancel,
-		shellCmd: shellCmd,
-	}
+	ts.ptyMu.Lock()
+	ts.pty = pty
+	ts.ctx = ctx
+	ts.cancel = cancel
+	ts.alive = true
+	ts.hasOutput = false
+	ts.restartID++
+	myID := ts.restartID
+	ts.ptyMu.Unlock()
 
-	go ps.ptyReader()
-	log.Printf("persistent session created with shell: %s", shellCmd)
-
-	return ps, nil
+	go ts.ptyReader(pty, ctx, myID)
+	return nil
 }
 
-func (ps *PersistentSession) ptyReader() {
+func (ts *TabSession) ptyReader(pty *conpty.ConPty, ctx context.Context, myID int) {
 	buf := make([]byte, 4096)
 	for {
 		select {
-		case <-ps.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 		}
 
-		n, err := ps.pty.Read(buf)
+		n, err := pty.Read(buf)
 		if err != nil {
 			if err != io.EOF {
-				log.Printf("pty read error: %v", err)
+				log.Printf("session %s: pty read error: %v", ts.id, err)
 			}
 			break
 		}
@@ -71,81 +89,167 @@ func (ps *PersistentSession) ptyReader() {
 			continue
 		}
 
-		ps.clientMutex.Lock()
-		for conn := range ps.clients {
-			if err := conn.Write(ps.ctx, websocket.MessageBinary, buf[:n]); err != nil {
-				log.Printf("ws write error: %v", err)
-				delete(ps.clients, conn)
+		ts.ptyMu.Lock()
+		ts.hasOutput = true
+		ts.ptyMu.Unlock()
+
+		ts.clientMutex.Lock()
+		for conn := range ts.clients {
+			if err := conn.Write(context.Background(), websocket.MessageBinary, buf[:n]); err != nil {
+				log.Printf("session %s: ws write error: %v", ts.id, err)
+				delete(ts.clients, conn)
 			}
 		}
-		ps.clientMutex.Unlock()
+		ts.clientMutex.Unlock()
 	}
-	ps.broadcastText(`{"type":"shell-exited"}`)
+
+	ts.ptyMu.Lock()
+	currentID := ts.restartID
+	if currentID == myID {
+		ts.alive = false
+	}
+	ts.ptyMu.Unlock()
+
+	// Stale pre-restart goroutines must not broadcast.
+	// On intentional kill the connections are already closed, so the broadcast no-ops.
+	if currentID == myID {
+		ts.broadcastText(`{"type":"shell-exited"}`)
+	}
 }
 
-func (ps *PersistentSession) broadcastText(msg string) {
-	ps.clientMutex.Lock()
-	defer ps.clientMutex.Unlock()
-	for conn := range ps.clients {
+func (ts *TabSession) broadcastText(msg string) {
+	ts.clientMutex.Lock()
+	defer ts.clientMutex.Unlock()
+	for conn := range ts.clients {
 		_ = conn.Write(context.Background(), websocket.MessageText, []byte(msg))
 	}
 }
 
-func (ps *PersistentSession) AttachClient(conn *websocket.Conn) {
-	ps.clientMutex.Lock()
-	ps.clients[conn] = true
-	ps.clientMutex.Unlock()
+func (ts *TabSession) restart() error {
+	ts.ptyMu.Lock()
+	cancel := ts.cancel
+	pty := ts.pty
+	ts.ptyMu.Unlock()
 
-	go ps.handleClient(conn)
+	cancel()
+	pty.Close()
+
+	return ts.startPTY()
 }
 
-func (ps *PersistentSession) handleClient(conn *websocket.Conn) {
+// AttachClient sends the session status to the client, then begins streaming.
+// Status "alive" means the shell is running and has history — client shows a dialog.
+// Status "new" means a fresh session (either brand-new or auto-restarted after death).
+func (ts *TabSession) AttachClient(conn *websocket.Conn) {
+	ts.ptyMu.Lock()
+	var status string
+	switch {
+	case !ts.hasOutput:
+		status = "new"
+	case ts.alive:
+		status = "alive"
+	default:
+		status = "dead"
+	}
+	ts.ptyMu.Unlock()
+
+	// Dead sessions restart automatically; client sees them as "new"
+	if status == "dead" {
+		if err := ts.restart(); err != nil {
+			log.Printf("session %s: auto-restart failed: %v", ts.id, err)
+		}
+		status = "new"
+	}
+
+	statusMsg, _ := json.Marshal(map[string]string{"type": "session-status", "status": status})
+
+	// Write status before adding to clients map so ptyReader doesn't race this write
+	_ = conn.Write(context.Background(), websocket.MessageText, statusMsg)
+
+	ts.clientMutex.Lock()
+	ts.clients[conn] = true
+	ts.clientMutex.Unlock()
+
+	go ts.handleClient(conn)
+}
+
+func (ts *TabSession) handleClient(conn *websocket.Conn) {
 	defer func() {
-		ps.clientMutex.Lock()
-		delete(ps.clients, conn)
-		ps.clientMutex.Unlock()
+		ts.clientMutex.Lock()
+		delete(ts.clients, conn)
+		remaining := len(ts.clients)
+		ts.clientMutex.Unlock()
 		conn.CloseNow()
-		log.Printf("client disconnected, %d clients remaining", len(ps.clients))
+		log.Printf("session %s: client disconnected, %d remaining", ts.id, remaining)
+
+		if remaining == 0 {
+			ts.ptyMu.Lock()
+			alive := ts.alive
+			ts.ptyMu.Unlock()
+			if !alive {
+				removeSession(ts.id)
+			}
+		}
 	}()
 
 	for {
-		msgType, data, err := conn.Read(ps.ctx)
+		msgType, data, err := conn.Read(context.Background())
 		if err != nil {
 			if *flagDebug {
-				log.Printf("client read error: %v", err)
+				log.Printf("session %s: client read error: %v", ts.id, err)
 			}
 			return
 		}
 
 		switch msgType {
 		case websocket.MessageBinary:
-			if _, err := ps.pty.Write(data); err != nil {
-				log.Printf("pty write error: %v", err)
+			ts.ptyMu.Lock()
+			pty := ts.pty
+			ts.ptyMu.Unlock()
+			if _, err := pty.Write(data); err != nil {
+				log.Printf("session %s: pty write error: %v", ts.id, err)
 				return
 			}
 		case websocket.MessageText:
 			var msg controlMsg
 			if err := json.Unmarshal(data, &msg); err != nil {
-				log.Printf("bad control message: %v", err)
+				log.Printf("session %s: bad control message: %v", ts.id, err)
 				continue
 			}
-			if msg.Type == "resize" && msg.Cols > 0 && msg.Rows > 0 {
-				if err := ps.pty.Resize(msg.Cols, msg.Rows); err != nil {
-					log.Printf("resize error: %v", err)
+			switch msg.Type {
+			case "resize":
+				if msg.Cols > 0 && msg.Rows > 0 {
+					ts.ptyMu.Lock()
+					pty := ts.pty
+					ts.ptyMu.Unlock()
+					if err := pty.Resize(msg.Cols, msg.Rows); err != nil {
+						log.Printf("session %s: resize error: %v", ts.id, err)
+					}
 				}
+			case "new-session":
+				if err := ts.restart(); err != nil {
+					log.Printf("session %s: restart failed: %v", ts.id, err)
+				}
+			case "kill-session":
+				removeSession(ts.id)
+				ts.Close()
+				return
 			}
 		}
 	}
 }
 
-func (ps *PersistentSession) Close() {
-	ps.clientMutex.Lock()
-	for conn := range ps.clients {
+func (ts *TabSession) Close() {
+	ts.clientMutex.Lock()
+	for conn := range ts.clients {
 		conn.CloseNow()
 	}
-	ps.clientMutex.Unlock()
+	ts.clientMutex.Unlock()
 
-	ps.cancel()
-	ps.pty.Close()
-	log.Printf("persistent session closed")
+	ts.ptyMu.Lock()
+	ts.cancel()
+	ts.pty.Close()
+	ts.ptyMu.Unlock()
+
+	log.Printf("session %s closed", ts.id)
 }

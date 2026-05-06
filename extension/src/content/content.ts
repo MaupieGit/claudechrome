@@ -24,6 +24,7 @@ let resizeStartPos = 0
 let resizeStartSize = 0
 let maximized = false
 let preMaximizeSize = DEFAULT_STATE.size
+let tabSessionId = ''
 
 async function loadState(): Promise<void> {
   const stored = await chrome.storage.local.get('claudechrome-panel-state')
@@ -230,7 +231,7 @@ function createPanelDOM(): void {
   btnClose.id = 'btn-close'
   btnClose.title = 'Close'
   btnClose.textContent = '✕'
-  btnClose.addEventListener('click', toggle)
+  btnClose.addEventListener('click', killAndClose)
   header.appendChild(btnClose)
 
   header.addEventListener('dblclick', (e: MouseEvent) => {
@@ -246,8 +247,8 @@ function createPanelDOM(): void {
   resizeHandle.id = 'resize-handle'
   panelDiv.appendChild(resizeHandle)
 
-  // iframe
-  const panelUrl = chrome.runtime.getURL('src/panel/panel.html')
+  // iframe — session ID in URL so it survives page navigation (sessionStorage would be lost)
+  const panelUrl = chrome.runtime.getURL('src/panel/panel.html') + '?session=' + tabSessionId
   const iframe = document.createElement('iframe')
   iframe.id = 'terminal-frame'
   iframe.src = panelUrl
@@ -276,6 +277,15 @@ function setDock(dock: 'right' | 'bottom'): void {
 
 function toggle(): void {
   state.visible = !state.visible
+  updateVisibility()
+  saveState()
+}
+
+function killAndClose(): void {
+  // Tell iframe to send kill-session to the server before we hide
+  const iframe = panelDiv?.querySelector('#terminal-frame') as HTMLIFrameElement | null
+  iframe?.contentWindow?.postMessage({ type: 'kill-session' }, '*')
+  state.visible = false
   updateVisibility()
   saveState()
 }
@@ -369,7 +379,16 @@ function ensurePanel(): void {
 }
 
 // Load state and create panel immediately
-loadState().then(() => {
+loadState().then(async () => {
+  // Get a stable session ID for this tab from the background script.
+  // Stored in chrome.storage.session so it survives page navigation within the tab.
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: 'get-session-id' })
+    tabSessionId = resp?.sessionId || crypto.randomUUID()
+  } catch {
+    tabSessionId = crypto.randomUUID()
+  }
+
   ensurePanel()
 
   // Watch for any DOM changes that might remove the panel and recreate it immediately
@@ -379,7 +398,6 @@ loadState().then(() => {
     }
   })
 
-  // Observe the entire document for changes
   restoreObserver.observe(document, {
     childList: true,
     subtree: true,

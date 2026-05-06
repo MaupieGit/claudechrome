@@ -16,9 +16,32 @@ import (
 )
 
 var (
-	globalSession *PersistentSession
-	sessionMutex  sync.Mutex
+	sessions     = make(map[string]*TabSession)
+	sessionMutex sync.Mutex
 )
+
+func getOrCreateSession(id, shellCmd string) (*TabSession, error) {
+	sessionMutex.Lock()
+	defer sessionMutex.Unlock()
+
+	if ts, ok := sessions[id]; ok {
+		return ts, nil
+	}
+
+	ts, err := newTabSession(id, shellCmd)
+	if err != nil {
+		return nil, err
+	}
+	sessions[id] = ts
+	return ts, nil
+}
+
+func removeSession(id string) {
+	sessionMutex.Lock()
+	delete(sessions, id)
+	sessionMutex.Unlock()
+	log.Printf("session %s removed", id)
+}
 
 func main() {
 	flag.Parse()
@@ -28,13 +51,6 @@ func main() {
 		log.Fatalf("config error: %v", err)
 	}
 	log.Printf("claudechrome-host starting: shell=%q addr=%s", *flagShell, *flagAddr)
-
-	// Create the persistent session
-	globalSession, err = NewPersistentSession(shellCmd)
-	if err != nil {
-		log.Fatalf("failed to create session: %v", err)
-	}
-	defer globalSession.Close()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/terminal", func(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +66,12 @@ func main() {
 			return
 		}
 
+		sessionID := r.URL.Query().Get("session")
+		if sessionID == "" {
+			http.Error(w, "missing session id", http.StatusBadRequest)
+			return
+		}
+
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 			InsecureSkipVerify: true,
 		})
@@ -58,13 +80,17 @@ func main() {
 			return
 		}
 
-		// Attach the WebSocket to the persistent session
-		sessionMutex.Lock()
-		globalSession.AttachClient(conn)
-		sessionMutex.Unlock()
+		ts, err := getOrCreateSession(sessionID, shellCmd)
+		if err != nil {
+			log.Printf("session create error: %v", err)
+			conn.CloseNow()
+			return
+		}
+
+		ts.AttachClient(conn)
 
 		if *flagDebug {
-			log.Printf("client connected: origin=%s shell=%s", origin, *flagShell)
+			log.Printf("client attached: session=%s origin=%s", sessionID, origin)
 		}
 	})
 
@@ -86,6 +112,11 @@ func main() {
 	go func() {
 		<-sigCh
 		log.Println("shutting down...")
+		sessionMutex.Lock()
+		for _, ts := range sessions {
+			ts.Close()
+		}
+		sessionMutex.Unlock()
 		server.Shutdown(context.Background())
 	}()
 

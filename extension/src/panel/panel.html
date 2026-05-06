@@ -53,12 +53,84 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
+
+    #session-dialog {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+
+    #session-dialog.visible {
+      display: flex;
+    }
+
+    #session-dialog-box {
+      background: #252526;
+      border: 1px solid #3e3e42;
+      border-radius: 4px;
+      padding: 20px 24px;
+      text-align: center;
+      min-width: 260px;
+    }
+
+    #session-dialog-box p {
+      color: #cccccc;
+      font-family: "Segoe UI", sans-serif;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+
+    .dialog-buttons {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+
+    .dialog-buttons button {
+      padding: 6px 16px;
+      font-size: 12px;
+      font-family: "Segoe UI", sans-serif;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+
+    #btn-resume {
+      background: #007acc;
+      color: #fff;
+    }
+
+    #btn-resume:hover {
+      background: #1a8cdb;
+    }
+
+    #btn-new-session {
+      background: #3e3e42;
+      color: #cccccc;
+    }
+
+    #btn-new-session:hover {
+      background: #505050;
+    }
   </style>
 </head>
 <body>
   <div id="terminal-container"></div>
   <div id="status-bar">
     <span id="status-text">Connecting...</span>
+  </div>
+  <div id="session-dialog">
+    <div id="session-dialog-box">
+      <p id="dialog-message">A shell session is running in this tab.</p>
+      <div class="dialog-buttons">
+        <button id="btn-resume">Resume session</button>
+        <button id="btn-new-session">New session</button>
+      </div>
+    </div>
   </div>
   <script type="module" src="./panel.ts"></script>
 </body>
