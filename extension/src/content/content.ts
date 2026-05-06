@@ -280,5 +280,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Initialize on document load
 loadState().then(() => {
-  createPanelDOM()
+  // Check if panel already exists (might be recreating after page reload)
+  if (!document.getElementById('claudechrome-host')) {
+    createPanelDOM()
+  } else {
+    // Panel already exists, just restore visibility state
+    updateVisibility()
+  }
 })
+
+// Re-add panel if it gets removed from DOM (page navigation, hard refresh, etc.)
+const observer = new MutationObserver(() => {
+  if (!document.getElementById('claudechrome-host') && state.visible) {
+    createPanelDOM()
+  }
+})
+
+// Start observing document changes after a delay to ensure page is ready
+setTimeout(() => {
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: false,
+  })
+}, 100)
