@@ -9,10 +9,15 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
-	"github.com/UserExistsError/conpty"
 	"github.com/coder/websocket"
+)
+
+var (
+	globalSession *PersistentSession
+	sessionMutex  sync.Mutex
 )
 
 func main() {
@@ -23,6 +28,13 @@ func main() {
 		log.Fatalf("config error: %v", err)
 	}
 	log.Printf("claudechrome-host starting: shell=%q addr=%s", *flagShell, *flagAddr)
+
+	// Create the persistent session
+	globalSession, err = NewPersistentSession(shellCmd)
+	if err != nil {
+		log.Fatalf("failed to create session: %v", err)
+	}
+	defer globalSession.Close()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/terminal", func(w http.ResponseWriter, r *http.Request) {
@@ -46,20 +58,13 @@ func main() {
 			return
 		}
 
-		pty, err := conpty.Start(shellCmd,
-			conpty.ConPtyDimensions(80, 24),
-			conpty.ConPtyWorkDir(workDir()),
-		)
-		if err != nil {
-			log.Printf("conpty start error: %v", err)
-			conn.Close(websocket.StatusInternalError, "failed to start shell")
-			return
-		}
+		// Attach the WebSocket to the persistent session
+		sessionMutex.Lock()
+		globalSession.AttachClient(conn)
+		sessionMutex.Unlock()
 
-		session := &Session{ws: conn, pty: pty}
-		go session.Run(context.Background())
 		if *flagDebug {
-			log.Printf("session started: origin=%s shell=%s", origin, *flagShell)
+			log.Printf("client connected: origin=%s shell=%s", origin, *flagShell)
 		}
 	})
 

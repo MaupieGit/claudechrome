@@ -5,14 +5,19 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"sync"
 
 	"github.com/UserExistsError/conpty"
 	"github.com/coder/websocket"
 )
 
-type Session struct {
-	ws  *websocket.Conn
-	pty *conpty.ConPty
+type PersistentSession struct {
+	pty         *conpty.ConPty
+	clients     map[*websocket.Conn]bool
+	clientMutex sync.Mutex
+	ctx         context.Context
+	cancel      context.CancelFunc
+	shellCmd    string
 }
 
 type controlMsg struct {
@@ -21,43 +26,91 @@ type controlMsg struct {
 	Rows int    `json:"rows"`
 }
 
-func (s *Session) Run(ctx context.Context) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	defer s.pty.Close()
-	defer s.ws.CloseNow()
+func NewPersistentSession(shellCmd string) (*PersistentSession, error) {
+	pty, err := conpty.Start(shellCmd,
+		conpty.ConPtyDimensions(80, 24),
+		conpty.ConPtyWorkDir(workDir()),
+	)
+	if err != nil {
+		return nil, err
+	}
 
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := s.pty.Read(buf)
-			if err != nil {
-				if err != io.EOF {
-					log.Printf("pty read error: %v", err)
-				}
-				cancel()
-				return
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ps := &PersistentSession{
+		pty:      pty,
+		clients:  make(map[*websocket.Conn]bool),
+		ctx:      ctx,
+		cancel:   cancel,
+		shellCmd: shellCmd,
+	}
+
+	go ps.ptyReader()
+	log.Printf("persistent session created with shell: %s", shellCmd)
+
+	return ps, nil
+}
+
+func (ps *PersistentSession) ptyReader() {
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-ps.ctx.Done():
+			return
+		default:
+		}
+
+		n, err := ps.pty.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("pty read error: %v", err)
 			}
-			if n == 0 {
-				continue
-			}
-			if err := s.ws.Write(ctx, websocket.MessageBinary, buf[:n]); err != nil {
+			return
+		}
+		if n == 0 {
+			continue
+		}
+
+		ps.clientMutex.Lock()
+		for conn := range ps.clients {
+			if err := conn.Write(ps.ctx, websocket.MessageBinary, buf[:n]); err != nil {
 				log.Printf("ws write error: %v", err)
-				cancel()
-				return
+				delete(ps.clients, conn)
 			}
 		}
+		ps.clientMutex.Unlock()
+	}
+}
+
+func (ps *PersistentSession) AttachClient(conn *websocket.Conn) {
+	ps.clientMutex.Lock()
+	ps.clients[conn] = true
+	ps.clientMutex.Unlock()
+
+	go ps.handleClient(conn)
+}
+
+func (ps *PersistentSession) handleClient(conn *websocket.Conn) {
+	defer func() {
+		ps.clientMutex.Lock()
+		delete(ps.clients, conn)
+		ps.clientMutex.Unlock()
+		conn.CloseNow()
+		log.Printf("client disconnected, %d clients remaining", len(ps.clients))
 	}()
 
 	for {
-		msgType, data, err := s.ws.Read(ctx)
+		msgType, data, err := conn.Read(ps.ctx)
 		if err != nil {
-			log.Printf("ws read closed: %v", err)
+			if *flagDebug {
+				log.Printf("client read error: %v", err)
+			}
 			return
 		}
+
 		switch msgType {
 		case websocket.MessageBinary:
-			if _, err := s.pty.Write(data); err != nil {
+			if _, err := ps.pty.Write(data); err != nil {
 				log.Printf("pty write error: %v", err)
 				return
 			}
@@ -68,10 +121,22 @@ func (s *Session) Run(ctx context.Context) {
 				continue
 			}
 			if msg.Type == "resize" && msg.Cols > 0 && msg.Rows > 0 {
-				if err := s.pty.Resize(msg.Cols, msg.Rows); err != nil {
+				if err := ps.pty.Resize(msg.Cols, msg.Rows); err != nil {
 					log.Printf("resize error: %v", err)
 				}
 			}
 		}
 	}
+}
+
+func (ps *PersistentSession) Close() {
+	ps.clientMutex.Lock()
+	for conn := range ps.clients {
+		conn.CloseNow()
+	}
+	ps.clientMutex.Unlock()
+
+	ps.cancel()
+	ps.pty.Close()
+	log.Printf("persistent session closed")
 }
