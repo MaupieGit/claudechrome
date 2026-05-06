@@ -1,14 +1,15 @@
-# Go build outputs
-*.exe
+# Go build outputs (but allow claudechrome-host.exe for distribution)
 *.exe~
 *.dll
 *.so
 *.dylib
 *.o
 *.out
+!claudechrome-host.exe
 
-# Go mod
-go.sum
+# Go mod (but allow host/go.sum for reproducible builds)
+/go.sum
+!/host/go.sum
 
 # Node modules
 node_modules/
