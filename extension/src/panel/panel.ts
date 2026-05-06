@@ -20,6 +20,7 @@ const sessionDialog = document.getElementById('session-dialog')!
 const dialogMessage = document.getElementById('dialog-message')!
 const btnResume = document.getElementById('btn-resume')!
 const btnNewSession = document.getElementById('btn-new-session')!
+const btnPopin = document.getElementById('btn-popin') as HTMLButtonElement
 const searchBar = document.getElementById('search-bar')!
 const searchInput = document.getElementById('search-input') as HTMLInputElement
 const searchResults = document.getElementById('search-results')!
@@ -27,7 +28,11 @@ const searchPrev = document.getElementById('search-prev')!
 const searchNext = document.getElementById('search-next')!
 const searchClose = document.getElementById('search-close')!
 
-const sessionId = new URLSearchParams(window.location.search).get('session') || crypto.randomUUID()
+const urlParams = new URLSearchParams(window.location.search)
+const sessionId = urlParams.get('session') || crypto.randomUUID()
+const autoResume = urlParams.get('autoResume') === '1'
+const popfromUrl = urlParams.get('popfrom') || ''
+const isPopout = window === window.top
 const WS_URL = `${WS_BASE}?session=${sessionId}`
 
 let fontSize = DEFAULT_FONT_SIZE
@@ -115,6 +120,17 @@ function hideSessionDialog(): void {
 }
 
 btnResume.addEventListener('click', () => hideSessionDialog())
+
+if (isPopout && popfromUrl) {
+  btnPopin.classList.add('visible')
+  btnPopin.addEventListener('click', async () => {
+    btnPopin.disabled = true
+    try {
+      await chrome.runtime.sendMessage({ type: 'pop-in', sessionId, url: popfromUrl })
+    } catch {}
+    window.close()
+  })
+}
 
 btnNewSession.addEventListener('click', () => {
   hideSessionDialog()
@@ -245,6 +261,8 @@ window.addEventListener('message', (e: MessageEvent) => {
     if (!target) return
     if (currentWs?.readyState !== WebSocket.OPEN) return
     currentWs.send(textEncoder.encode(`ssh ${target}\r`))
+    window.focus()
+    term.focus()
   } else if (e.data?.type === 'clear-terminal') {
     term.clear()
   } else if (e.data?.type === 'open-search') {
@@ -286,8 +304,10 @@ function connect(): void {
       try {
         const msg = JSON.parse(event.data)
         if (msg.type === 'session-status') {
-          if (msg.status === 'alive') {
+          if (msg.status === 'alive' && !autoResume) {
             showSessionDialog('alive')
+          } else if (msg.status === 'alive' && autoResume) {
+            term.focus()
           }
         } else if (msg.type === 'shell-exited') {
           showSessionDialog('ended')

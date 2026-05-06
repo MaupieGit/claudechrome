@@ -25,6 +25,7 @@ let resizeStartSize = 0
 let maximized = false
 let preMaximizeSize = DEFAULT_STATE.size
 let tabSessionId = ''
+let pendingAutoResume = false
 
 async function loadState(): Promise<void> {
   const stored = await chrome.storage.local.get('claudechrome-panel-state')
@@ -371,7 +372,11 @@ function createPanelDOM(): void {
   panelDiv.appendChild(resizeHandle)
 
   // iframe — session ID in URL so it survives page navigation (sessionStorage would be lost)
-  const panelUrl = chrome.runtime.getURL('src/panel/panel.html') + '?session=' + tabSessionId
+  let panelUrl = chrome.runtime.getURL('src/panel/panel.html') + '?session=' + tabSessionId
+  if (pendingAutoResume) {
+    panelUrl += '&autoResume=1'
+    pendingAutoResume = false
+  }
   const iframe = document.createElement('iframe')
   iframe.id = 'terminal-frame'
   iframe.src = panelUrl
@@ -442,6 +447,7 @@ async function sshToCurrentHost(forceReprompt: boolean): Promise<void> {
   const target = username ? `${username}@${host}` : host
   const iframe = panelDiv?.querySelector('#terminal-frame') as HTMLIFrameElement | null
   iframe?.contentWindow?.postMessage({ type: 'ssh-command', target }, '*')
+  iframe?.focus()
 }
 
 // chrome.runtime can throw synchronously after the extension is reloaded.
@@ -462,6 +468,11 @@ async function hardRefresh(): Promise<void> {
   if (!chrome.runtime?.id) {
     notifyExtensionReloaded()
     return
+  }
+  if (tabSessionId) {
+    try {
+      await chrome.storage.session.set({ [`auto-resume-${tabSessionId}`]: true })
+    } catch {}
   }
   await safeSendMessage({ type: 'hard-refresh' })
 }
@@ -544,7 +555,11 @@ async function popOutToWindow(): Promise<void> {
     notifyExtensionReloaded()
     return
   }
-  await safeSendMessage({ type: 'pop-out', sessionId: tabSessionId })
+  await safeSendMessage({
+    type: 'pop-out',
+    sessionId: tabSessionId,
+    popfrom: window.location.href,
+  })
 }
 
 function setConnectionDot(state: 'connecting' | 'connected' | 'disconnected'): void {
@@ -669,8 +684,9 @@ function ensurePanel(): void {
 
 // Load state and create panel immediately
 loadState().then(async () => {
-  // If we were opened by the "open-incognito" button, the originating tab's session UUID
-  // is passed in as #ccsession=<UUID>. Adopt it so both windows share one host-side session.
+  // If we were opened by the "open-incognito" or "pop-in" button, the originating tab's
+  // session UUID is passed in as #ccsession=<UUID>. Adopt it so both windows share one
+  // host-side session, and skip the resume dialog.
   const hashMatch = window.location.hash.match(/(?:^|[#&])ccsession=([0-9a-f-]+)/i)
   if (hashMatch) {
     tabSessionId = hashMatch[1]
@@ -678,8 +694,10 @@ loadState().then(async () => {
       await chrome.runtime.sendMessage({ type: 'set-session-id', sessionId: tabSessionId })
     } catch {}
     history.replaceState(null, '', window.location.pathname + window.location.search)
-    // The user explicitly asked to share the session here — make sure the panel is visible.
+    // The user explicitly asked to share the session here — make sure the panel is visible
+    // and skip the "resume / new" dialog since the intent is clearly to continue.
     state.visible = true
+    pendingAutoResume = true
     saveState()
   } else {
     // Get a stable session ID for this tab from the background script.
@@ -690,6 +708,19 @@ loadState().then(async () => {
     } catch {
       tabSessionId = crypto.randomUUID()
     }
+  }
+
+  // Hard-refresh sets this flag — consume it so the panel skips the resume dialog
+  // for the upcoming reconnect, then forget it.
+  if (tabSessionId) {
+    const key = `auto-resume-${tabSessionId}`
+    try {
+      const stored = await chrome.storage.session.get(key)
+      if (stored[key]) {
+        pendingAutoResume = true
+        await chrome.storage.session.remove(key)
+      }
+    } catch {}
   }
 
   ensurePanel()

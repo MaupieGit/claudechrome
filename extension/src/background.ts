@@ -31,13 +31,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'pop-out' && typeof msg.sessionId === 'string') {
-    const panelUrl = chrome.runtime.getURL('src/panel/panel.html') + '?session=' + encodeURIComponent(msg.sessionId)
+    let panelUrl = chrome.runtime.getURL('src/panel/panel.html') + '?session=' + encodeURIComponent(msg.sessionId)
+    if (typeof msg.popfrom === 'string' && msg.popfrom) {
+      panelUrl += '&popfrom=' + encodeURIComponent(msg.popfrom)
+    }
     chrome.windows.create({
       url: panelUrl,
       type: 'popup',
       width: 900,
       height: 600,
     })
+      .then(() => sendResponse({ ok: true }))
+      .catch(err => sendResponse({ ok: false, error: String(err) }))
+    return true
+  }
+
+  if (msg.type === 'pop-in' && typeof msg.url === 'string' && typeof msg.sessionId === 'string') {
+    let target: string
+    try {
+      const u = new URL(msg.url)
+      u.hash = `ccsession=${msg.sessionId}`
+      target = u.toString()
+    } catch {
+      sendResponse({ ok: false, reason: 'bad-url' })
+      return true
+    }
+    chrome.windows.create({ url: target, focused: true })
       .then(() => sendResponse({ ok: true }))
       .catch(err => sendResponse({ ok: false, error: String(err) }))
     return true
