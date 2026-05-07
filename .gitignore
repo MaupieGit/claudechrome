@@ -35,6 +35,10 @@ Thumbs.db
 *.build/
 *.dist/
 
+# Release packaging output (regenerated from source on demand)
+dist-export/
+claudechrome-export-*.zip
+
 # Logs
 *.log
 npm-debug.log*
