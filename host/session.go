@@ -33,6 +33,7 @@ type TabSession struct {
 	restartID int
 	alive     bool
 	hasOutput bool
+	closed    bool // ptyMu: true once Close() has run; guards against double-close of conpty handles
 	ptyMu     sync.Mutex
 
 	clients     map[*websocket.Conn]bool
@@ -262,7 +263,13 @@ func (ts *TabSession) handleClient(conn *websocket.Conn) {
 		if remaining == 0 {
 			ts.ptyMu.Lock()
 			alive := ts.alive
+			closed := ts.closed
 			ts.ptyMu.Unlock()
+			if closed {
+				// Session was already torn down (e.g. via kill-session). Don't schedule
+				// a reap that would later double-close the conpty handles.
+				return
+			}
 			if !alive {
 				removeSession(ts.id)
 			} else {
@@ -313,6 +320,18 @@ func (ts *TabSession) handleClient(conn *websocket.Conn) {
 					log.Printf("session %s: restart failed: %v", ts.id, err)
 				}
 			case "kill-session":
+				// When tabs share a session (e.g. via the open-in-incognito button),
+				// closing one tab must not destroy the shell the other is still using.
+				// Only honor kill-session when this is the last attached client; with
+				// others present, treat it as "disconnect me" — the defer below will
+				// remove this conn while the shell keeps running for the rest.
+				ts.clientMutex.Lock()
+				others := len(ts.clients) - 1
+				ts.clientMutex.Unlock()
+				if others > 0 {
+					log.Printf("session %s: kill-session ignored — %d other client(s) still attached", ts.id, others)
+					return
+				}
 				removeSession(ts.id)
 				ts.Close()
 				return
@@ -322,6 +341,19 @@ func (ts *TabSession) handleClient(conn *websocket.Conn) {
 }
 
 func (ts *TabSession) Close() {
+	// Guard against double-close: a closed kill-session that races the reap timer
+	// (or any other doubled call) would otherwise call conpty.Close() twice, which
+	// CloseHandle's already-closed (and possibly recycled) handles. On Windows that
+	// can take down unrelated handles in the same process — including the TCP
+	// listener's socket — and crash the server.
+	ts.ptyMu.Lock()
+	if ts.closed {
+		ts.ptyMu.Unlock()
+		return
+	}
+	ts.closed = true
+	ts.ptyMu.Unlock()
+
 	ts.clientMutex.Lock()
 	ts.cancelReapLocked()
 	for conn := range ts.clients {
