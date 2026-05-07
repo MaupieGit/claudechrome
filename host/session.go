@@ -6,9 +6,22 @@ import (
 	"io"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/UserExistsError/conpty"
 	"github.com/coder/websocket"
+)
+
+// Grace period after the last client disconnects before the session is reaped.
+// Long enough to absorb hard-refresh / page-navigation gaps; short enough that
+// a closed tab doesn't leak its PowerShell process for very long.
+const reapGracePeriod = 60 * time.Second
+
+// heartbeatInterval / heartbeatTimeout govern the per-client PING loop that
+// keeps idle WebSockets alive and surfaces dead connections quickly.
+const (
+	heartbeatInterval = 30 * time.Second
+	heartbeatTimeout  = 10 * time.Second
 )
 
 type TabSession struct {
@@ -23,7 +36,45 @@ type TabSession struct {
 	ptyMu     sync.Mutex
 
 	clients     map[*websocket.Conn]bool
+	reapTimer   *time.Timer
 	clientMutex sync.Mutex
+}
+
+// cancelReapLocked stops a pending reap. Caller must hold clientMutex.
+func (ts *TabSession) cancelReapLocked() {
+	if ts.reapTimer != nil {
+		ts.reapTimer.Stop()
+		ts.reapTimer = nil
+	}
+}
+
+// scheduleReapLocked arms the reap timer. Caller must hold clientMutex.
+func (ts *TabSession) scheduleReapLocked() {
+	if ts.reapTimer != nil {
+		ts.reapTimer.Stop()
+	}
+	ts.reapTimer = time.AfterFunc(reapGracePeriod, ts.reap)
+}
+
+// reap removes the session and closes its PTY if still no clients are attached.
+// Acquires sessionMutex first so a racing getOrCreateSession can't hand this
+// session out to a new client between our check and the delete.
+func (ts *TabSession) reap() {
+	sessionMutex.Lock()
+	ts.clientMutex.Lock()
+	clientCount := len(ts.clients)
+	if clientCount == 0 {
+		ts.reapTimer = nil
+		delete(sessions, ts.id)
+	}
+	ts.clientMutex.Unlock()
+	sessionMutex.Unlock()
+
+	if clientCount > 0 {
+		return
+	}
+	log.Printf("session %s: reaped after %s idle", ts.id, reapGracePeriod)
+	ts.Close()
 }
 
 type controlMsg struct {
@@ -167,10 +218,36 @@ func (ts *TabSession) AttachClient(conn *websocket.Conn) {
 	_ = conn.Write(context.Background(), websocket.MessageText, statusMsg)
 
 	ts.clientMutex.Lock()
+	ts.cancelReapLocked()
 	ts.clients[conn] = true
 	ts.clientMutex.Unlock()
 
+	go ts.heartbeat(conn)
 	go ts.handleClient(conn)
+}
+
+// heartbeat sends a WebSocket PING every heartbeatInterval. Browsers auto-respond
+// to PING frames at the protocol level, so no client-side code is needed. Two roles:
+//  1. Keeps the connection bytes-active so idle timeouts (browser, OS, intermediaries)
+//     don't silently drop a long-lived tab.
+//  2. Detects a dead client within ~heartbeatTimeout instead of waiting for TCP
+//     keepalive (Windows default is 2 hours), so the reap timer can start promptly.
+func (ts *TabSession) heartbeat(conn *websocket.Conn) {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		ctx, cancel := context.WithTimeout(context.Background(), heartbeatTimeout)
+		err := conn.Ping(ctx)
+		cancel()
+		if err != nil {
+			log.Printf("session %s: heartbeat failed, closing client: %v", ts.id, err)
+			conn.CloseNow()
+			return
+		}
+		if *flagDebug {
+			log.Printf("session %s: heartbeat ok", ts.id)
+		}
+	}
 }
 
 func (ts *TabSession) handleClient(conn *websocket.Conn) {
@@ -188,6 +265,11 @@ func (ts *TabSession) handleClient(conn *websocket.Conn) {
 			ts.ptyMu.Unlock()
 			if !alive {
 				removeSession(ts.id)
+			} else {
+				ts.clientMutex.Lock()
+				ts.scheduleReapLocked()
+				ts.clientMutex.Unlock()
+				log.Printf("session %s: no clients, reaping in %s if no reconnect", ts.id, reapGracePeriod)
 			}
 		}
 	}()
@@ -241,6 +323,7 @@ func (ts *TabSession) handleClient(conn *websocket.Conn) {
 
 func (ts *TabSession) Close() {
 	ts.clientMutex.Lock()
+	ts.cancelReapLocked()
 	for conn := range ts.clients {
 		conn.CloseNow()
 	}

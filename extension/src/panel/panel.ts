@@ -68,6 +68,7 @@ term.open(container)
 let currentWs: WebSocket | null = null
 let dialogVisible = false
 let searchVisible = false
+let killedIntentionally = false
 
 function sendResize(ws: WebSocket): void {
   const dims = fitAddon.proposeDimensions()
@@ -253,6 +254,7 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
 window.addEventListener('message', (e: MessageEvent) => {
   if (e.data?.type === 'kill-session') {
     hideSessionDialog()
+    killedIntentionally = true
     if (currentWs?.readyState === WebSocket.OPEN) {
       currentWs.send(JSON.stringify({ type: 'kill-session' }))
     }
@@ -321,8 +323,12 @@ function connect(): void {
   ws.onclose = () => {
     currentWs = null
     hideSessionDialog()
-    setStatus('Host disconnected — retrying...', '#c0392b')
     setConnectionState('disconnected')
+    if (killedIntentionally) {
+      setStatus('Session ended', '#888')
+      return
+    }
+    setStatus('Host disconnected — retrying...', '#c0392b')
     setTimeout(scheduleReconnect, RECONNECT_MS)
   }
 }
