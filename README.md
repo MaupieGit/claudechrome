@@ -83,7 +83,13 @@ The following are remembered across reloads:
 
 - **Scrollback:** 100,000 lines per session. Tunable via `SCROLLBACK_LINES` in `extension/src/panel/panel.ts`.
 - **Sessions:** One shell per tab. Tabs survive page navigation (session UUID stays).
-- **Reconnect:** Auto-reconnect every 2 s if the host is reachable; status bar shows progress.
+- **Reconnect:** Auto-reconnect every 2 s if the host is reachable; status bar shows progress. Suppressed after the user clicks ✕ so a kill is final.
+
+### Session lifecycle on the host
+
+- **Kill (✕ button):** Removes the session from the host immediately and terminates the underlying shell. The client does not auto-reconnect.
+- **Reap on disconnect:** When the last WebSocket for a session disconnects without sending kill (tab close, browser quit, network drop, Chrome tab discard), the session enters a 60 s grace window. Reattaching within that window restores it; otherwise the host removes the session and terminates the shell. Tunable via `reapGracePeriod` in `host/session.go`.
+- **Heartbeat:** The host pings each connected client every 30 s with a WebSocket PING frame (browsers auto-respond at the protocol level — no client code needed). Two roles: keeps idle WS connections alive across browser/OS idle timeouts, and surfaces silent disconnects within ~40 s instead of waiting for Windows TCP keepalive (default 2 h). Tunable via `heartbeatInterval` / `heartbeatTimeout` in `host/session.go`.
 
 ## Quick Start
 
@@ -186,7 +192,7 @@ Then update the extension's WebSocket URL in `extension/src/panel/panel.ts`.
 ### Go Host Binary
 - **`host/main.go`** — HTTP server, WebSocket upgrade, origin validation (`chrome-extension://` only), session lifecycle.
 - **`host/config.go`** — Shell configuration map, `--shell` and `--addr` flag parsing.
-- **`host/session.go`** — Per-connection PTY bridge. Goroutine shuttles PTY output → WebSocket binary frames. Main loop shuttles WebSocket → PTY input + handles resize JSON control messages.
+- **`host/session.go`** — Per-tab session: ConPTY bridge (PTY output → WS binary frames, WS input → PTY), control-message handling (resize, new-session, kill-session), per-client heartbeat goroutine, and the reap timer that cleans up sessions whose last client has disconnected.
 
 ## Security
 
